@@ -2,7 +2,7 @@
 
 A C++ program that dumps MRC image/movie/map slices into 8-bit grayscale PNG files. Very fast (compared to python/perl). Needs libpng.
 
-+/- 6-RMS cutoff is applied to filter out X-ray/flare pixels.
++/- 6-RMS cutoff is applied to filter out X-ray/flare pixels. If not supplied by the MRC file header, the RMS, mean, max and min values are recalculated from slice 0 and is used for calculating the scaling factor and cutoff values, which are applied to all slices.
 
 To compile:
 
