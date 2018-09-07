@@ -7,3 +7,7 @@ A C++ program that dumps MRC image/movie/map slices into 8-bit grayscale PNG fil
 To compile:
 
 g++ MapDump.cpp -std=c++11 -lpng -o MapDump.exe 
+
+Example:
+
+MapDump.exe *.mrcs -bin 3 -vbin 4 -sigma 2 -statframe 10
