@@ -14,7 +14,7 @@
 
 
 
-int findparam(int argc,char *argv[], char *infile[], char *outdir, char *prefix,  int * statframe, int * bin_factor); //find the input file list
+int findparam(int argc,char *argv[], char *infile[], char *outdir, char *prefix,  int * statframe, int * bin_factor, int * vbin,float * sigma); //find the input file list
 
 
 void statarray(float * ary, int size,float *min,float *max,float *rms,float *mean);
@@ -22,12 +22,15 @@ void statarray(float * ary, int size,float *min,float *max,float *rms,float *mea
 
 int readmap_header(const char *filename0, char *header, int *nsymbt, int *c, int *r, int *s , float *amin, float *amax, float *amean, float *arms, int * mode, int * datasize);
 
+float ** ReadMap(const char *filename0, int nsymbt,int c, int r,int s ,int mode); 
 
-int readmap(const char *filename0, float *array, int nsymbt, int c, int r, int s);
+int read_slice(const char *filename0, float *array,int nsymbt,int c, int r,int s ,int mode) ;
+//int readmap(const char *filename0, map_data *array,int nsymbt,int c, int r, int s, int datasize)
 
-int read_whole_array(const char *filename0, float *array,int nsymbt,int c, int r,int s, int datasize) ;//read the whole array (1.6G for K2 in real4)
-int read_slice_float      (const char *filename0, float *array,int nsymbt,int c, int r,int slice, int datasize) ;//slice start from 0
-int read_slice_char      (const char *filename0, char *array,int nsymbt,int c, int r,int slice, int datasize) ;//slice start from 0
+//int read_whole_array(const char *filename0, float *array,int nsymbt,int c, int r,int s, int datasize) ;//read the whole array (1.6G for K2 in real4)
+//template <class map_data>
+//int read_slice      (const char *filename0, map_data *array,int nsymbt,int c, int r,int slice, int datasize) ;//slice start from 0
+
 int dumparray(const char *filename0, char *png, int arraysize);
 
 int bin(float * array, float * array_bin,int x, int y, int bin_factor);
@@ -53,7 +56,7 @@ int main(int argc,char *argv[])
 { 
   float t1,t2;
   t1=clock();
-  printf ("\nMapDump: dump CCP4/MRC map/movie/image files to PNG.\n Input must have .mrcs extension\n\n");
+//  printf ("\nMapDump: dump CCP4/MRC map/movie/image files to PNG.\n Input must have .mrcs extension\n\n");
 
 //parse input
   char **infile = new char*[2048]; 
@@ -62,7 +65,9 @@ int main(int argc,char *argv[])
   for (int i = 0; i < 2048; ++i) {    infile[i] = new char[1024];  }
 	int statframe=0;
 	int bin_factor=0;
-  int num_infile= findparam(argc,argv, infile, outdir, prefix, &statframe, &bin_factor);
+	int vbin=0;
+	float sigma=1.5; //6-sigma cutoff 
+  int num_infile= findparam(argc,argv, infile, outdir, prefix, &statframe, &bin_factor, &vbin, &sigma);
   std::cout<<"Num of files to dump: "<<num_infile<<'\n';
 	for(int f=0;f<num_infile;f++){
 		printf("%d %s\n",f+1, infile[f]);
@@ -82,44 +87,33 @@ int main(int argc,char *argv[])
 
     char * fn=new char[1024];
     strcpy(fn, infile[f]);
-
+		std::cout<<"\n\n====Processing file ["<<fn<<"]===========\n";
 
     float amin=0,amax=0,amean=0,arms=0;
     int datasize=4; //default real4
     int mode=2; //default
     readmap_header(const_cast<char*>(fn), header, &nsymbt, &c,&r,&s,&amin,&amax,&amean,&arms, &mode, &datasize);//get size of the first file
+
+    int arraysize=c*r*s;
+    int slice_size=c*r;
+
+
+    float **  array= ReadMap(const_cast<char*>(fn), nsymbt,c,r,s, mode); //read one slice
+
+
+
 		if (arms <=0 && statframe==0){
 			printf("\nThe RMS found in header is zero or negative. updatinging with frame 0\n");
 			statframe=1;
 			}
 
-    int arraysize=c*r*s;
-    int slice_size=c*r;
-		if (mode ==2){;		}
-		else{
-			printf("map mode ERROR: %d\n",mode);
-			exit(0);
-			}
-
-    	float **array    =new float * [s];
-    	for(int z=0;z<s;z++){ 
-	  	 	array[z]    =new float [slice_size];
-	      read_slice_float(const_cast<char*>(fn), array[z],nsymbt,c,r,z, datasize); //read one slice
-	  	}
-
-		/*if (mode ==0){
-    	float **array    =new char * [s];
-    	for(int z=0;z<s;z++){ 
-	  	 	array[z]    =new char [slice_size];
-	      read_slice_char(const_cast<char*>(fn), array[z],nsymbt,c,r,z, datasize); //read one slice
-	  	}
-		}
-	  */
-    
+		
+    if(statframe>0){
               float amin_n=0;
               float amax_n=0;
               float arms_n=0;
               float amean_n=0;
+		
 		int statcont=0;
     for(int z=0;z<s && z<statframe;z++){ //statframe is upper limit of the frames to quant
 
@@ -140,19 +134,20 @@ int main(int argc,char *argv[])
               amax_n/=statcont;
               arms_n/=statcont;
               amean_n/=statcont;
-
-
-
-    for(int z=0;z<s;z++){     
+			arms=arms_n;
+			amin=amin_n;
+			amax=amax_n;
+			amean=amean_n;			
+			printf("\nUpdated min %8.3f max %8.3f mean %8.3f RMS %8.3f\n\n", amin, amax,  amean, arms);
+	}
+    for(int z=0;z<s-vbin+1;z++){     
         char  png_name[1024];
 
-        float lowcut=amean-6*arms; //default
-        if(lowcut<0){lowcut=0;}
-        if(lowcut<amin){lowcut=amin;}
-        float highcut=amean+6*arms; //default
+        float highcut=amean+sigma*arms; //default sigma=6
         if(highcut>amax){highcut=amax;}
             
-        float scale=255/(highcut-lowcut);
+        float scale=128/(sigma*arms)/bin_factor/bin_factor/vbin;
+        float shift=-amean*bin_factor*bin_factor*vbin;
         
         sprintf(png_name,"%s.slice_%04d.png",fn,z);
 
@@ -162,31 +157,50 @@ int main(int argc,char *argv[])
             
          char title[1024]; 
          
-         printf ("saving image to file <%s>\n", png_name);
+         printf ("saving image to file <%s> scaling factor %f\n", png_name, scale);
+         
+         float * outframe=array[z];
+         if(vbin>1 ){
+         	float * Vbin_fp=new float  [slice_size];
+         	outframe= Vbin_fp;
+         	
+         	for(int i=0;i<slice_size;i++){
+         		*(Vbin_fp+i)=0;
+         		for(int j=0;j<vbin;j++){
+         			*(Vbin_fp+i)+=*(array[z+j]+i);
+         		}
+         	}
+         		
+         	z+=vbin-1;
+         	}
+         	
 
         if(bin_factor<=0){
-					rescale(array[z],scale,lowcut,c*r);
-					writeImage(png_name, c,r, array[z]);
+					rescale(array[z],scale,shift,slice_size);
+					writeImage(png_name, c,r, outframe);
 					}
         	else{
 		          float * array_bin=new float [(c/bin_factor)*(r/bin_factor)];      
 
-	        		bin(array[z],array_bin,c,r,bin_factor); 
-	        		std::cout<<"ok\n";
-							rescale(array_bin,scale/bin_factor/bin_factor,lowcut,(c/bin_factor)*(r/bin_factor));
-							std::cout<<(c/bin_factor)*(r/bin_factor)<<"\n";
+	        		bin(outframe,array_bin,c,r,bin_factor); 
+	        		//std::cout<<"ok\n";
+							rescale(array_bin,scale,shift,(c/bin_factor)*(r/bin_factor));
+							//std::cout<<(c/bin_factor)*(r/bin_factor)<<"\n";
 							writeImage(png_name, c/bin_factor,r/bin_factor, array_bin);
 							delete array_bin;
+							delete outframe;
         		}
         
-				delete array[z];
         }
 
 
 	//    dumparray("dump.ary", png,  arraysize);
     
+			for(int z=0;z<s;z++){delete array[z];}
 
 	  delete array;
+	  delete symmop;
+	  delete header;
 
 	}//end of file cycle
 	
@@ -248,8 +262,9 @@ int readmap_header(const char *filename0, char *header, int *nsymbt, int *c, int
   in.close();
   return fsize;
 }
+/*
 
-int readmap(const char *filename0, float *array,int nsymbt,int c, int r, int s)
+int readmap(const char *filename0, map_data *array,int nsymbt,int c, int r, int s, int datasize)
 {
   int fsize=0;
   int arraysize;
@@ -267,7 +282,7 @@ int readmap(const char *filename0, float *array,int nsymbt,int c, int r, int s)
     in.seekg (0, std::ios::beg);
     in.read(( char *)header,1024);
     in.read(( char *)symmop,nsymbt);
-    in.read(( char *)array,(arraysize*4));
+    in.read(( char *)array,(arraysize*datasize));
   }
 
   in.close();
@@ -298,51 +313,54 @@ int read_whole_array(const char *filename0, float *array,int nsymbt,int c, int r
   in.close();
   return c*r*s*datasize;
 }
-
-
-int read_slice_float(const char *filename0, float *array,int nsymbt,int c, int r,int slice ,int datasize) //slice start from 0
+*/
+float ** ReadMap(const char *fn, int nsymbt,int c, int r,int s ,int mode) //slice start from 0
 {
-  int fsize=0;
+    float **array = new float * [s];
+  	for(int z=0;z<s;z++){ 
+	  	 	array[z]    =new float [c*r];
+	      read_slice(const_cast<char*>(fn), array[z],nsymbt,c,r,z, mode); //read one slice
+	  	}
+	return array;
+}
+
+
+int read_slice(const char *filename0, float *array,int nsymbt,int c, int r,int s ,int mode) //slice start from 0
+{
+  long int fsize=0;
+	int datasize=4;
+		if(mode==0){datasize=1;}
+		if(mode==2){datasize=4;}
 
   std::ifstream in (filename0,std::ios::in|std::ios::binary|std::ios::ate);
 	if(!in)	{	  printf ( "file does not exist\n");    return 0;  }
 
   if (in.is_open()){
     fsize = in.tellg();
-    int start=1024+nsymbt+(slice)*c*r*datasize;
-    int end=1024+nsymbt+(slice+1)*c*r*datasize;
-    if(end>fsize){      printf ("error! file size %d <  \n!!", fsize);      }
-        printf ("reading slice at bytes %12d - %12d ... \n",start,end);
+    long int start=1024+nsymbt+(s)*c*r*datasize;
+    long int end=1024+nsymbt+(s+1)*c*r*datasize;
+
+    if(end>fsize){      printf ("error! file size %ld <  \n!!", fsize);      }
+        //printf ("reading slice at bytes %12ld - %12ld ... \n",start,end);
 
     in.seekg (start, std::ios::beg);
-    in.read(( char *)array,(c*r*datasize));
+    if(mode==2){in.read(( char *)array,(c*r*datasize));}
+    if(mode==0){
+    	char * buffer = new char [c*r*datasize];
+    	in.read(( char *)buffer,(c*r*datasize));
+    	for (int i=0;i<(c*r*datasize);i++){
+    		*(array+i)=(float)*(buffer+i);
+    		
+    		}
+    		delete buffer;
+    	}
+    
+    
   }
-
   in.close();
   return c*r*datasize;
 }
 
-int read_slice_char(const char *filename0, char *array,int nsymbt,int c, int r,int slice ,int datasize) //slice start from 0
-{
-  int fsize=0;
-
-  std::ifstream in (filename0,std::ios::in|std::ios::binary|std::ios::ate);
-	if(!in)	{	  printf ( "file does not exist\n");    return 0;  }
-
-  if (in.is_open()){
-    fsize = in.tellg();
-    int start=1024+nsymbt+(slice)*c*r*datasize;
-    int end=1024+nsymbt+(slice+1)*c*r*datasize;
-    if(end>fsize){      printf ("error! file size %d <  \n!!", fsize);      }
-        printf ("reading slice at bytes %12d - %12d ... ",start,end);
-
-    in.seekg (start, std::ios::beg);
-    in.read(( char *)array,(c*r*datasize));
-  }
-
-  in.close();
-  return c*r*datasize;
-}
 
 int dumparray(const char *filename0, char *png, int arraysize)
 {	
@@ -470,18 +488,18 @@ int bin(float * array, float * array_bin,int x, int y, int bin_factor)
 	       	idx++;
         }
     }
-    std::cout<<idx<<"\n";
+    //std::cout<<idx<<"\n";
 } 
-int rescale(float * ary, float scale,float min, int size){
-    printf(" rescaling with min = %f scale = %f ...\n",min,scale);
+int rescale(float * ary, float scale,float shift, int size){
+    //printf(" rescaling with scale = %f ...\n",scale);
     for(int i=0;i<size;i++)
     {
         
-        *(ary+i)=(*(ary+i)-min )* scale;
+        *(ary+i)=(*(ary+i)+shift )* scale+127;
+      	if(*(ary+i)<0){*(ary+i)=0 ;}
+      	if(*(ary+i)>255){*(ary+i)=255 ;}
         
         }
-    
-    
     }
 
 inline void setRGB(png_byte *ptr, float val)
@@ -582,7 +600,7 @@ int writeImage(const char* filename, int width, int height, float *buffer)
 
 
 
-int findparam(int argc,char *argv[], char *infile[], char *outdir, char *prefix, int * statframe, int * bin_factor) //find the input file list
+int findparam(int argc,char *argv[], char *infile[], char *outdir, char *prefix, int * statframe, int * bin_factor, int * vbin, float * sigma) //find the input file list
 {
   char *dir=NULL;
   char *filelist=NULL;
@@ -612,6 +630,18 @@ int findparam(int argc,char *argv[], char *infile[], char *outdir, char *prefix,
  	  	char *tmp= new char[100]; 
  	  	strcpy(tmp,argv[i+1]);
  	  	*bin_factor=std::__cxx11::stoi(tmp);
+			i+=1;continue;
+		}
+ 	  if(strcmp(argv[i],"-vbin")==0  && i<argc-1) { 
+ 	  	char *tmp= new char[100]; 
+ 	  	strcpy(tmp,argv[i+1]);
+ 	  	*vbin=std::__cxx11::stoi(tmp);
+			i+=1;continue;
+		}
+ 	  if(strcmp(argv[i],"-sigma")==0  && i<argc-1) { 
+ 	  	char *tmp= new char[100]; 
+ 	  	strcpy(tmp,argv[i+1]);
+ 	  	*sigma=std::__cxx11::stof(tmp);
 			i+=1;continue;
 		}
 
