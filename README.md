@@ -10,4 +10,4 @@ g++ MapDump.cpp -std=c++11 -lpng -o MapDump.exe
 
 Example:
 
-MapDump.exe *.mrcs -bin 3 -vbin 4 -sigma 2 -statframe 10
+MapDump.exe *.mrcs -bin 3 -vbin 4 -sigma 2.5 -statframe 10
