@@ -51,10 +51,12 @@ int main(int argc,char *argv[])
 	char *prefix=new char[1024];
 	for (int i = 0; i < 2048; ++i) {    infile[i] = new char[1024];  }
 	int statframe=0;
-	int bin_factor=0;
-	int vbin=0;
+	int bin_factor=1;
+	int vbin=1;
 	float sigma=1.5;			 //6-sigma cutoff
 	int num_infile= findparam(argc,argv, infile, outdir, prefix, &statframe, &bin_factor, &vbin, &sigma);
+	if(bin_factor<=0){bin_factor=1;}
+	if(vbin<=0){vbin=1;}		
 	std::cout<<"Num of files to dump: "<<num_infile<<'\n';
 	for(int f=0;f<num_infile;f++)
 	{
@@ -166,7 +168,7 @@ int main(int argc,char *argv[])
 				z+=vbin-1;
 			}
 
-			if(bin_factor<=0)
+			if(bin_factor==1 && vbin==1)
 			{
 				rescale(array[z],scale,shift,slice_size);
 				writeImage(png_name, c,r, outframe);
@@ -496,6 +498,7 @@ int bin(float * array, float * array_bin,int x, int y, int bin_factor)
 int rescale(float * ary, float scale,float shift, int size)
 {
 	//printf(" rescaling with scale = %f ...\n",scale);
+	if(scale <=0){scale =1;}
 	for(int i=0;i<size;i++)
 	{
 
