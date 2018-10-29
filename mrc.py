@@ -3,8 +3,7 @@
 #
 #The modifications allow using the 10x80Byte blocks in the header for saving notes, and using arbitrary amount of 80B blocks after the 1024Bytes for longer notes.
 #These still comply with MRC2014 format.
-#But simplistic MRC readers that do not consider possibility of extended header may have troubles.
-#SO try not use a extended header! (800B can save a lot of notes already)
+#In addition, I only  'C' array order, which means data.shape should be (slice,ysize,xsize)
 #
 #
 #===GPL regarding modified source===
@@ -79,16 +78,27 @@ MODE_TABLE_HUMAN={  0 : "8-bit signed integer (range -128 to 127)",
                 6 : "16-bit unsigned Int (2 Bytes)"
   }
 
-HEADER_LEN = int(256)  # Bytes.
+      
 
+def mrc_header256(data, psz=1.0,  amin=None, amax=None, amean=None,arms=None,s=1,c=0,r=0,ud=False):
+    
+    if data.dtype not in NUMPY_MODE:
+        Print("Error!! Invalid dtype for MRC. Not saving!!")
+        return
+    if(len(data.shape)<2):
+        Print("Error!! data.shape appears to be {}".format(data.shape))
+        return
 
-def mrc_header(shape, dtype=np.float32, psz=1.0):
-    header = np.zeros(HEADER_LEN / 4, dtype=np.int32)
+    #c,r=data.shape[:1] #I use 'C' order, : s,c,r or z,y,x
+    if(len(data.shape)==3): s,c,r=data.shape
+    if(len(data.shape)==2): c,r=data.shape
+
+    map_mode = NUMPY_MODE[data.dtype]
+    header = np.zeros(256 / 4, dtype=np.int32)
     header_f = header.view(np.float32)
-    header[:3] = shape
-    if np.dtype(dtype) not in NUMPY_MODE:
-        raise ValueError("Invalid dtype for MRC")
-    header[3] = NUMPY_MODE[np.dtype(dtype)]
+    #print (data.shape, data.dtype,map_mode)
+    header[:3] = r,c,s
+    header[3]=map_mode
     header[7:10] = header[:3]  # mx, my, mz (grid size)
     header_f[10:13] = psz * header[:3]  # xlen, ylen, zlen
     header_f[13:16] = 90.0  # CELLB
@@ -100,44 +110,31 @@ def mrc_header(shape, dtype=np.float32, psz=1.0):
     header[52] = ord('M')+ord('A')*256+ord('P')*256*256+ord(' ')*256*256*256
     header[53] = 17476  # 0x00004444 for little-endian.
     header_f[54] = -1  # Convention for unreliable RMS value.
-    return header
 
-def mrc_header_gen(data, psz=1.0, origin=None, amin=None, amax=None, amean=None,arms=None):
-
-    r,c=data.shape[:1]
-    s=1
-    if(data.shape[2]): s=data.shape[2] #in case data is only 2D
-
-
-    if np.dtype(dtype) not in NUMPY_MODE:
-        raise ValueError("Invalid dtype for MRC")
-
-    map_mode = NUMPY_MODE[data.dtype]
-
-
-
-
-
-def mrc_header_complete(data, psz=1.0, origin=None, amin=None, amax=None, amean=None,arms=None):
-    header = mrc_header(data.shape, data.dtype, psz=psz)
-    header_f = header.view(np.float32)
-    if(amin==None): amin=data.min()
-    if(amax==None): amax=data.max()
-    if(amean==None): amean=data.mean()
-    if(arms==None): amrms=data.std()
-
+    if(amin==None or ud==True): 
+      print("Updating min from frame 0")
+      amin=data[0].min() 
+    if(amax==None or ud==True): 
+      print("Updating max from frame 0")
+      amax=data[0].max()
+    if(amean==None or ud==True): 
+      print("Updating mean from frame 0")
+      amean=data[0].mean()
+    if(arms==None or ud==True): 
+      print("Updating rms from frame 0")
+      arms=data[0].std()#stdev is very close to rmsd for a image. Being single precision float they are indistinguishable
+      #data_dev=data-amean
+      #data_dev1=data_dev.reshape(c*r)
+      #arms=np.sqrt(data_dev1.dot(data_dev1)/(r*c)) #datasize is large enough to use stdev instead
+    
     header_f[19:22] = [amin,amax,amean]
     header_f[54]=arms
-    #stdev is very close to rmsd for a image. Being single precision float they are indistinguishable
-    #data_dev=data-amean
-    #rmsd=np.sqrt(data_dev.dot(data_dev)/xsize/ysize) #datasize is large enough to use stdev instead
-    if origin is None:
-        header_f[49:52] = (0, 0, 0)
-    elif origin is "center":
-        header_f[49:52] = psz * header[:3] / 2
-    else:
-        header_f[49:52] = origin
+    print ("Saving MRC: s,c,r {} mode {} {}\n min {:.1f} max {:.1f} mean {:.2f} rms {:.2f}".format((s,c,r),map_mode,MODE_TABLE_HUMAN[map_mode],amin,amax,amean,arms))
+    
+
+
     return header
+
 
 def label_gen(header, label_str):
   length=len(label_str)
@@ -196,17 +193,23 @@ def ndary_tobytes(ndary):
   #print( start)
   return bstring[start:]
 
-def save_mrc(mrc_name,data, desc='',hdr_max=-1,hdr_min=0,hdr_mean=-1,hdr_rms=-1,hdr_apix=1.0,):
+def save_mrc(mrc_name,data, desc='',hdr_max=None,hdr_min=None,hdr_mean=None,hdr_rms=None,hdr_apix=1.0,z=1,y=0,x=0,update_stats=False): #note: take 'C' array order, different from pyem
   '''
   requires np.ndarray arranged in [z][y][x] ('C' order)
   '''
+  
   if data.dtype not in NUMPY_MODE:
-      raise ValueError("Invalid dtype for MRC")
-  hdr_max=data[0,:,:].max()            #only use first frame for stats
-  hdr_min=data[0,:,:].min()
-  hdr_mean=data[0,:,:].mean()
-  hdr_rms=data[0,:,:].std()
-  hdr_256=mrc_header_complete(data, amax=hdr_max,amin=hdr_min,amean=hdr_mean,arms=hdr_rms,psz=hdr_apix) #first 256 bytes
+     Print("Error!! Invalid dtype for MRC. Not saving!!")
+     return
+  if(len(data.shape)<2):
+     Print("Error!! data.shape appears to be {}".format(data.shape))
+     return
+#  hdr_max=data[0,:,:].max()            #only use first frame for stats
+#  hdr_min=data[0,:,:].min()
+#  hdr_mean=data[0,:,:].mean()
+#  hdr_rms=data[0,:,:].std()
+#  print(data.shape,hdr_max,  hdr_min,  hdr_mean,  hdr_rms)
+  hdr_256=mrc_header256(data, amax=hdr_max,amin=hdr_min,amean=hdr_mean,arms=hdr_rms,psz=hdr_apix,s=z,c=y,r=x,ud=update_stats) #first 256 bytes
   ext_header=''
   hdr_label=''
   if(len(desc)<(1024-256)):
@@ -301,7 +304,7 @@ def parse_MRC2014_header(header_data,filesize):
   if _expected_file_size != filesize:
     print ( "Error! The calculated file size is different from the actual size \n" )
     OK = 0
-    exit()
+    #exit()
   if _expected_file_size == filesize and (nsymbt % 80) == 0:
     print ("File size check OK")
 
