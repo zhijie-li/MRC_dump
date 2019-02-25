@@ -1,59 +1,10 @@
 #!/usr/bin/env python
 
-#
-#The MRC writing functions are modified from pyEM (https://github.com/asarnow/pyem) under GPL.
-#
-#The modifications allow using the 10x80 Byte blocks in the header for saving notes, and using arbitrary amount of 80B blocks after the 1024Bytes for longer notes.
-#These still comply with MRC2014 format.
-#In addition, I only use 'C' array order, which means data.shape should be (slice,ysize,xsize)
-#
-#
-#===GPL regarding modified source===
-#
-# 5. Conveying Modified Source Versions.
-#
-#  You may convey a work based on the Program, or the modifications to
-#produce it from the Program, in the form of source code under the
-#terms of section 4, provided that you also meet all of these conditions:
-#
-#    a) The work must carry prominent notices stating that you modified
-#    it, and giving a relevant date.
-#
-#    b) The work must carry prominent notices stating that it is
-#    released under this License and any conditions added under section
-#    7.  This requirement modifies the requirement in section 4 to
-#    "keep intact all notices".
-#
-#    c) You must license the entire work, as a whole, under this
-#    License to anyone who comes into possession of a copy.  This
-#    License will therefore apply, along with any applicable section 7
-#    additional terms, to the whole of the work, and all its parts,
-#    regardless of how they are packaged.  This License gives no
-#    permission to license the work in any other way, but it does not
-#    invalidate such permission if you have separately received it.
-#
-#    d) If the work has interactive user interfaces, each must display
-#    Appropriate Legal Notices; however, if the Program has interactive
-#    interfaces that do not display Appropriate Legal Notices, your
-#    work need not make them do so.
-#
-#  A compilation of a covered work with other separate and independent
-#works, which are not by their nature extensions of the covered work,
-#and which are not combined with it such as to form a larger program,
-#in or on a volume of a storage or distribution medium, is called an
-#"aggregate" if the compilation and its resulting copyright are not
-#used to limit the access or legal rights of the compilation's users
-#beyond what the individual works permit.  Inclusion of a covered work
-#in an aggregate does not cause this License to apply to the other
-#parts of the aggregate.
-#
+
 import numpy as np
-import os
 import struct
-import io
+import os
 import argparse
-import sys
-import common
 
 NUMPY_MODE = {
         0: np.dtype(np.int8),
@@ -83,186 +34,6 @@ MODE_TABLE_HUMAN={  0 : "8-bit signed integer (range -128 to 127)",
                 6 : "16-bit unsigned Int (2 Bytes)"
   }
 ###RELION recently introduced mode 101:4-bit int for movies
-
-
-def find_dir(filename):
-  if(os.path.isfile(filename)):
-      file_dir = os.path.dirname(os.path.abspath(filename))
-      mrcname=os.path.basename(filename)
-      (root,ext)=os.path.splitext(mrcname)
-  return (root,ext,mrcname,file_dir)
-
-def mrc_header256(data, psz=1.0,  amin=None, amax=None, amean=None,arms=None,s=1,c=0,r=0,ud=False): #generate fresh header
-    
-    if data.dtype not in NUMPY_MODE:
-        Print("Error!! Invalid dtype for MRC. Not saving!!")
-        return
-    if(len(data.shape)<2):
-        Print("Error!! data.shape appears to be {}".format(data.shape))
-        return
-
-    #c,r=data.shape[:1] #I use 'C' order, : s,c,r or z,y,x
-    if(len(data.shape)==3): s,c,r=data.shape
-    if(len(data.shape)==2): c,r=data.shape
-
-    map_mode = NUMPY_MODE[data.dtype]
-    header = np.zeros(256 / 4, dtype=np.int32)
-    header_f = header.view(np.float32)
-    #print (data.shape, data.dtype,map_mode)
-    header[:3] = r,c,s
-    header[3]=map_mode
-    header_f[4:7] = [0,0,0]  # x,y,z origin
-    header[7:10] = header[:3]  # mx, my, mz (grid size)
-    header_f[10:13] = psz * header[:3]  # xlen, ylen, zlen
-    header_f[13:16] = 90.0  # CELLB
-    header[16:19] = 1, 2, 3  # Axis order.
-    header_f[19:22] = 1, 0, -1  # Convention for unreliable  values.
-    header[26] = ord('M')+ord('R')*256+ord('C')*256*256+ord('O')*256*256*256
-    header[27] = 20140  # Version 2014-0.
-    header_f[49:52] = 0, 0, 0  # Default origin.
-    header[52] = ord('M')+ord('A')*256+ord('P')*256*256+ord(' ')*256*256*256
-    header[53] = 17476  # 0x00004444 for little-endian.
-    header_f[54] = -1  # Convention for unreliable RMS value.
-
-    if(amin==None or ud==True): 
-      print("Updating min from frame 0")
-      amin=data[0].min() 
-    if(amax==None or ud==True): 
-      print("Updating max from frame 0")
-      amax=data[0].max()
-    if(amean==None or ud==True): 
-      print("Updating mean from frame 0")
-      amean=data[0].mean()
-    if(arms==None or ud==True): 
-      print("Updating rms from frame 0")
-      arms=data[0].std()#stdev is very close to rmsd for a image. Being single precision float they are indistinguishable
-      #data_dev=data-amean
-      #data_dev1=data_dev.reshape(c*r)
-      #arms=np.sqrt(data_dev1.dot(data_dev1)/(r*c)) #datasize is large enough to use stdev instead
-    
-    header_f[19:22] = [amin,amax,amean]
-    header_f[54]=arms
-    print ("Saving MRC: s,c,r {} mode {} {}\n min {:.1f} max {:.1f} mean {:.2f} rms {:.2f}".format((s,c,r),map_mode,MODE_TABLE_HUMAN[map_mode],amin,amax,amean,arms))
-    
-
-
-    return header
-
-
-def label_gen(header, label_str):
-  length=len(label_str)
-  if(length>(1024-256)):
-      header[55]=1024-256
-      return label_str[:(1024-256)]
-  blc=int(length/80)
-  if(length%80>0):
-    blc+=1
-  header[55]=blc
-  hdr_label=label_str + chr(0) *(1024-256-length)
-  return hdr_label
-
-def ext_hdr(header,ext_str):
-  length=len(ext_str)
-  extblc_len=0
-  ext_hdr=''
-  header[23]=0
-  if(length>0):
-    if(length%80>0):
-      header[23]=extblc_len=(int(length/80)+1)*80 #always use blocks of 80byes to be consistent with ccp4 map
-    else:
-      header[23]=extblc_len=length
-
-    ext_hdr=ext_str + chr(0) *(extblc_len-length)
-  return ext_hdr
-
-
-def ndary_tobytes(ndary):
-  '''
-  equivalent to ndarry.tobytes
-  this is for older version of numpy
-  '''
-  fmtstr={
-    np.dtype(np.int8):     'b'       ,   #signed 1-byte integer
-    np.dtype(np.int16):    'h'       ,   #Signed 2-byte integer
-    np.dtype(np.int32):    'i'       ,   #Signed 4-byte integer
-    np.dtype(np.float32):  'f'       ,   #4-byte float
-    np.dtype(np.uint16):   'd'       ,   #8-byte float
-  }
-
-
-  #fmt=fmtstr[ndary.dtype]
-  #onedary=ndary.reshape(ndary.size)
-  #a=onedary.tolist()
-  #bstring= struct.pack(fmt * len(a),*a)
-  #===========method2========
-  #based on https://stackoverflow.com/questions/43925624/fastest-method-to-dump-numpy-array-into-string
-  tmp = io.BytesIO()
-  np.save(tmp, ndary)
-  #ndary.tofile(tmp)
-
-  bstring=tmp.getvalue()
-  #the npy header length is saved in bytes 9 and 10 in the header, total headerlength = 6(0x93NUMPY)+2(vv)+2(LL)+header_length
-  start=10+ord(bstring[9])*256+ord(bstring[8]) #normally 80
-  #print( start)
-  return bstring[start:]
-
-def simple_write_mrc(mrc_name,header,exthdr,data_3d): #simple because header is only a 1024-byte string
-      if(len(header)!=1024):
-        print("error, header lenth wrong: {}".format(len(header)))
-        return
-        
-      with open(mrc_name, 'wb') as f:
-        if(hasattr(np.ndarray,'tobytes')): #better, but only exists in newer numpy
-          #print("using ndarry.tobytes()")
-          f.write(header)
-          f.write(exthdr)
-          f.write(data_3d.tobytes())
-        else:
-          #print("ndarry.tobytes() not availble, using alternative")
-          f.write(header)
-          f.write(exthdr)
-          f.write(ndary_tobytes(data_3d))
-
-def save_mrc(mrc_name,data, desc='',hdr_max=None,hdr_min=None,hdr_mean=None,hdr_rms=None,hdr_apix=1.0,z=1,y=0,x=0,update_stats=False): #note: take 'C' array order, different from pyem
-  '''
-  requires np.ndarray arranged in [z][y][x] ('C' order)
-  '''
-  
-  if data.dtype not in NUMPY_MODE:
-     Print("Error!! Invalid dtype for MRC. Not saving!!")
-     return
-  if(len(data.shape)<2):
-     Print("Error!! data.shape appears to be {}".format(data.shape))
-     return
-#  hdr_max=data[0,:,:].max()            #only use first frame for stats
-#  hdr_min=data[0,:,:].min()
-#  hdr_mean=data[0,:,:].mean()
-#  hdr_rms=data[0,:,:].std()
-#  print(data.shape,hdr_max,  hdr_min,  hdr_mean,  hdr_rms)
-  hdr_256=mrc_header256(data, amax=hdr_max,amin=hdr_min,amean=hdr_mean,arms=hdr_rms,psz=hdr_apix,s=z,c=y,r=x,ud=update_stats) #first 256 bytes
-  ext_header=''
-  hdr_label=''
-  if(len(desc)<(1024-256)):
-    hdr_label=label_gen(hdr_256,desc)
-  else:
-    hdr_label=label_gen(hdr_256,'')
-    ext_header=ext_hdr(hdr_256,desc)
-
-  with open(mrc_name, 'wb') as f:
-    if(hasattr(np.ndarray,'tobytes')): #better, but only exists in newer numpy
-      #print("using ndarry.tobytes()")
-      f.write(hdr_256.tobytes())
-      f.write(hdr_label)
-      f.write(ext_header)
-      f.write(data.tobytes())
-    else:
-      #print("ndarry.tobytes() not availble, using alternative")
-      f.write(ndary_tobytes(hdr_256))
-      f.write(hdr_label)
-      f.write(ext_header)
-      f.write(ndary_tobytes(data))
-
-
 
 
 
@@ -502,90 +273,17 @@ def read_MRC2014(filename):
       f.close()
     return header_inf,exthdr,data_1d
 
-def flip_y(data_3d):
-  z,y,x=data_3d.shape
-  data_1d_flipped=np.ndarray((z,y,x),dtype=data_3d.dtype,order='C')
-  for zz in range(0,z-1):
-    for yy in range(0,y-1):
-      data_1d_flipped[zz][yy]=data_3d[zz][y-1-yy]
-      
-  return data_1d_flipped
-
-def flip_z(data_3d):
-  z,y,x=data_3d.shape
-  data_1d_flipped=np.ndarray((z,y,x),dtype=data_3d.dtype,order='C')
-  for zz in range(0,z-1):
-      data_1d_flipped[zz]=data_3d[z-1-zz]
-      
-  return data_1d_flipped
-  
 def proc(filename,args):
-    
-    
-    (root,ext,mrcname,file_dir)=find_dir(filename)
     file_size=os.path.getsize(filename)
     
     header_inf,exthdr,data_1d=read_MRC2014(filename)
-    x,y,z=header_inf['c'],header_inf['r'],header_inf['s']
-    data_3d=data_1d.reshape(z,y,x)
 
-    
-    if(len(exthdr)>0):
-      print("Extended header found: {} Bytes, using {} Bytes".format(len(exthdr),header_inf['nsymbt']))
-    header=header_inf['ori_1024']
-
-#process and save new map 
-    mrc_name=root
-    if(args.flipY):
-      data_3d=flip_y(data_3d)
-      mrc_name+='.Yflip'
-    
-    if(args.flipZ):
-      data_3d=flip_z(data_3d)
-      mrc_name+='.Zflip'
-          
-    if(args.ctr):
-      mrc_name+='.center'
-      header_inf['nxstart']=-header_inf['c']/2
-      header_inf['nystart']=-header_inf['r']/2
-      header_inf['nzstart']=-header_inf['s']/2
-
-      newheader=header[:16]+\
-                struct.pack('<iii',header_inf['nxstart'],header_inf['nystart'],header_inf['nzstart']) +\
-                header[28:1024]
-      header=newheader
-    mrc_name+='.mrc'
-    simple_write_mrc(mrc_name,header,exthdr,data_3d)
-    
-      
-def linear_interpolarte(data3d,factor): #expande map with a integer factor
-    from scipy import interpolate
-    z,y,x=data_3d.shape
-    data_3d_exp=np.ndarray((z*factor,y*factor,x*factor),dtype=data_3d.dtype,order='C')
-    #edge
-    #face
-    #body
-      
-    return data_3d_exp
-    
   
 def main():
     print('MRC lib and tools       <zhijie.li@utoronto.ca>')
-
     parser = argparse.ArgumentParser(description='MRC file reading and manipulation')
-
-
     parser.add_argument("mrc_files",metavar='.mrc files',nargs='+',type=str, help="The .mrc files to process.")
-
-    parser.add_argument("-flipY",action='store_true',default=False, help="flip map in Y direction (causing handedness to change)")
-    parser.add_argument("-flipZ",action='store_true',default=False, help="flip map in Z direction (causing handedness to change)")
-    parser.add_argument("-ctr",action='store_true',default=False, help="shift the center of the map to (0,0,0) - by changing the map's origin (words 5-7) in header")
-
-  #  parser.add_argument("--bin", help="Binning factor, needs to be positive integer",                        type=int, metavar="N")
-    #parser.add_argument("--sigma", help="Rescaling, how many sigmas",                        type=float, metavar="N")
     args=parser.parse_args()                           
-
-    
     
     for filename in args.mrc_files:
         proc(filename,args)
@@ -593,3 +291,4 @@ def main():
 if __name__ == '__main__':
   main()
   
+
