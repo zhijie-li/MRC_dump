@@ -1,16 +1,89 @@
 from __future__ import print_function
+from __future__ import division
 
 import numpy as np
 
+def doc():
+	'''
+<libtiff_ctypes.py>
 
-def save_tiff8(buff,desc_data,tif_name,amax,amin,ysize,xsize,udate=False):
+class TIFF(ctypes.c_void_p):
+    """ Holds a pointer to TIFF object.
+
+    To open a tiff file for reading, use
+
+      tiff = TIFF.open (filename, more='r')
+      
+    To read an image from a tiff file, use
+
+      image = tiff.read_image()
+
+    where image will be a numpy array.
+
+    To read all images from a tiff file, use
+
+      for image in tiff.iter_images():
+          # do stuff with image
+
+    To creat a tiff file containing numpy array as image, use
+
+      tiff = TIFF.open(filename, mode='w')
+      tiff.write_image(array)
+      tiff.close()
+
+    To copy and change tags from a tiff file:
+
+      tiff_in =  TIFF.open(filename_in)
+      tiff_in.copy (filename_out, compression=, bitspersample=,
+      sampleformat=,...)
+    """
+
+	'''
+	pass
+	
+def read_tiff(filename):
+  from PIL import Image
+  im = Image.open(filename)
+  import numpy
+  data = numpy.array(im)
+  
+  return data
+
+  
+def bindata(dataori,binning): #dataori needs to be 2d
+  binned1=np.zeros(dataori.shape,dtype=np.float32)
+  bin_rtn=binned1
+  y,x=dataori.shape
+  
+  if(binning > 1):
+      
+      for i in range (0,binning):
+          binned1 += np.roll(dataori,-i,axis=1)
+       #   print(binned1.mean(),i,binned1.shape)      
+
+      binned2=np.copy(binned1[: ,  0:x//binning*binning:binning])
+      binned=np.copy(binned2)
+      #print(binned2.mean(),i,binned2.shape)      
+      for i in range (1,binning):
+          binned += np.roll(binned2,-i,axis=0)
+          #print(binned.mean(),i,binned.shape)      
+     
+  
+      bin_rtn=np.copy(binned[0:y//binning*binning:binning,:])
+      
+      bin_rtn/=(binning**2)
+  #print (bin_rtn.shape)      
+  return bin_rtn
+
+
+def save_tiff8(buff,desc_data,tif_name,amax,amin,ysize,xsize,udate=False,sigma=None):
   '''
   save numpy ndarray as 8bit image
   will rescale from min to max
   '''
   try:
     from libtiff import TIFF
-  except ImportError, e:
+  except ImportError as e:
     print ("Need <libtiff> for saving TIFF files:\n  pip install libtiff  ")
     return
 
@@ -20,12 +93,24 @@ def save_tiff8(buff,desc_data,tif_name,amax,amin,ysize,xsize,udate=False):
   if (udate): #update data
     amax=data.max()
     amin=data.min()
+  if (sigma is not None): #scaling using a sigma cutoff
+    amean=data.mean()
+    arms=data.std()
+    
+    amax_t=amean+sigma*arms
+    amin_t=amean-sigma*arms
+    if(amax_t<amax):
+      amax=amax_t
+    if(amin_t>amin):
+      amin=amin_t
+      
   if (amax-amin)>0 :
     scale=255/(amax-amin)
     d0=(data-amin)*scale
   if (amax-amin)<0 :
     scale=255/(amax-amin)
     d0=(data-amax)*scale
+
   d1=d0.reshape(ysize,xsize)
   d2=d1.astype(np.uint8,casting='unsafe')
   #print("{} {} {}".format(d2[0][0], d2.shape,d2.dtype))
@@ -41,7 +126,7 @@ def save_tiff8(buff,desc_data,tif_name,amax,amin,ysize,xsize,udate=False):
 def save_tiff16(buff,desc_data,tif_name,amax,amin,ysize,xsize):
   try:
     from libtiff import TIFF
-  except ImportError, e:
+  except ImportError as e:
     print ("Need <libtiff> for saving TIFF files:\n  pip install libtiff  ")
     return
 
@@ -55,10 +140,11 @@ def save_tiff16(buff,desc_data,tif_name,amax,amin,ysize,xsize):
   tiff.write_image(d2,compression='lzw')
   tiff.close()
 
-def save_tiff16_no_rescaling(buff,desc_data,tif_name,amax,amin,ysize,xsize):
+def save_tiff16_no_rescaling(buff,desc_data,tif_name,amax,amin,ysize,xsize): 
+  '''save buffer as-is (dtype), will reshape to xsize x ysize'''
   try:
     from libtiff import TIFF
-  except ImportError, e:
+  except ImportError as e:
     print ("Need <libtiff> for saving TIFF files:\n  pip install libtiff  ")
     return
 
@@ -69,10 +155,10 @@ def save_tiff16_no_rescaling(buff,desc_data,tif_name,amax,amin,ysize,xsize):
   tiff.write_image(d2,compression='lzw')
   tiff.close()
 
-def save_tiff16_positive(buff,desc_data,tif_name,amax,amin,ysize,xsize):
+def save_tiff16_positive(buff,desc_data,tif_name,amax,amin,ysize,xsize): #shift values (x-amin) to change all data points to positive
   try:
     from libtiff import TIFF
-  except ImportError, e:
+  except ImportError as e:
     print ("Need <libtiff> for saving TIFF files:\n  pip install libtiff  ")
     return
 

@@ -7,7 +7,7 @@ import os
 #import sys
 #import yaml
 #import csv
-#import numpy as np
+import numpy as np
 #import scipy.stats
 import EMAN2star #needs to copy EMAN2star.py from EMAN2 folder to program folder
 
@@ -31,6 +31,8 @@ def modify_image(data3d):
 
 def bin_inf(data_2d,binning,sigma):
   binned=bindata(data_2d,binning)
+  if(binning <=1):
+    binned =data_2d
   y,x=binned.shape
  # print(y,x)
   newmax=binmax=  binned.max()
@@ -45,6 +47,35 @@ def bin_inf(data_2d,binning,sigma):
 #  print(newmax,newmin,binrms,binmean,y,x)
   return binned,newmax,newmin,binrms,binmean,y,x
     
+def bin_inf_3d(data_3d,binning,sigma,header_inf):
+  z,y,x=data_3d.shape
+  if(binning <=1):
+    binned =data_3d
+    newmax=header_inf['amax']
+    newmin=header_inf['amin']
+    binmean=header_inf['amean']
+    binrms=header_inf['arms']
+    return binned,newmax,newmin,binrms,binmean,z,y,x
+    
+  else:
+    binned=np.zeros((z,int(y/binning),int(x/binning)),dtype=data_3d.dtype)
+    for i in range(z):
+        
+        binned[i]=bindata(data_3d[i],binning)
+    bz,by,bx=binned.shape
+
+    newmax=binmax=  binned.max()
+    newmin=binmin=  binned.min()
+    binrms=  binned.std()
+    binmean=  binned.mean()
+    
+    if(binmean+sigma*binrms<binmax):
+      newmax=binmean+sigma*binrms
+    if(binmean-sigma*binrms>binmin):
+      newmin=binmean-sigma*binrms
+#    print(newmax,newmin,binrms,binmean,y,x)
+    return binned,newmax,newmin,binrms,binmean,bz,by,bx
+
 def display_image(data_2d,binning=2,sigma=3): #needs 2d data
   from PIL import Image
 
@@ -73,6 +104,8 @@ def proc(filename,args,ctf,binning=4,sigma=3,dump=True):
       dump=True
     if args.show:
       dump=False
+    if args.info:
+      dump=False
       
 ##READ AND GET SCALING DONE    
     file_size=os.path.getsize(filename)
@@ -81,12 +114,18 @@ def proc(filename,args,ctf,binning=4,sigma=3,dump=True):
     data_3d=data_1d.reshape(z,y,x)
     
       
-    if header_inf['arms']<=0: #unreliable header inf, update
+    if header_inf['arms']<=0 or args.update_stats_frame0: #unreliable header inf, update
         header_inf['amin']=data_3d[0].min()
         header_inf['amax']=data_3d[0].max()
         header_inf['amean']=data_3d[0].mean()
         header_inf['arms']=data_3d[0].std()
         print ("Updated based on frame 0: min {} max {} mean {} rms {}".format(header_inf['amin'],header_inf['amax'],header_inf['amean'],header_inf['arms']))
+    if args.update_stats: #force update stats with all data, this is for maps
+        header_inf['amin']=data_1d.min()
+        header_inf['amax']=data_1d.max()
+        header_inf['amean']=data_1d.mean()
+        header_inf['arms']=data_1d.std()
+        print ("Updated based on all data: min {} max {} mean {} rms {}".format(header_inf['amin'],header_inf['amax'],header_inf['amean'],header_inf['arms']))
       
       #print(data_3d.dtype)
     newmax=header_inf['amax']
@@ -99,6 +138,12 @@ def proc(filename,args,ctf,binning=4,sigma=3,dump=True):
     if(len(exthdr)>0):
         print("Extended header found: {} Bytes, using {} Bytes".format(len(exthdr),header_inf['nsymbt']))
 
+    if args.csv:
+      import csv
+      import numpy as np
+      with open(filename+'.csv', 'w') as csv_f:
+        data_2d=data_1d.reshape(z*y,x)
+        np.savetxt(csv_f, data_2d, '%s', ',')
 
 
 
@@ -112,6 +157,8 @@ def proc(filename,args,ctf,binning=4,sigma=3,dump=True):
 ###dump frames
     if dump==True:
       print("Dumping {} {} bytes {} x {} x {}".format(filename,file_size,x,y,z))
+      (binned,newmax,newmin,binrms,binmean,bz,by,bx)=bin_inf_3d(data_3d,binning,sigma,header_inf)
+
       for s in range(0,header_inf['MRC_NZ']):
         tif8_name=filename+'.'
         if(header_inf['nz']>1):
@@ -121,9 +168,7 @@ def proc(filename,args,ctf,binning=4,sigma=3,dump=True):
           tif8_name+=ctf[filename]+'_'
         tif8_name+='uint8.tif'
         
-        (binned,newmax,newmin,binrms,binmean,y,x)=bin_inf(data_3d[s],binning,sigma)
-
-        save_tiff8(binned,exthdr,tif8_name,newmax,newmin,y,x)
+        save_tiff8(binned[s],exthdr,tif8_name,newmax,newmin,by,bx)
 #        tif16_name=filename+'{:03d}'.format(s)+'.tif'
 
         #Saving in tif is not really useful for float data. But if the data are in int8 or 16 or 32, compression can be good.
@@ -149,9 +194,15 @@ def main():
     
     parser = argparse.ArgumentParser(description='Dump MRC file to tiff slices')
     parser.add_argument("mrc_files",metavar='.mrc files',nargs='+',type=str, help="The .mrc files to process.")
-    parser.add_argument("--bin", help="Binning factor, needs to be positive integer", type=int, metavar="N")
-    parser.add_argument("--sigma", help="Rescaling, how many sigmas",                        type=float, metavar="N")
+    parser.add_argument("--sigma", help="rescale tiff8 image by sigma",                        type=float, metavar="N")
     parser.add_argument("-show",action='store_true',default=False, help="Display the first frame only")
+    parser.add_argument("-info",action='store_true',default=False, help="Display the header info only")
+    parser.add_argument("-csv",action='store_true',default=False, help="save the map's data to a csv file")
+    parser.add_argument("-update_stats",action='store_true',default=False, help="update stats")
+    parser.add_argument("-update_stats_frame0",action='store_true',default=False, help="update stats based on first 2D slice")
+    parser.add_argument("--gain", help="Gain reference (FEI raw format)", type=str, metavar="N")
+    parser.add_argument("--bin", help="Binning factor for uint8.tif, needs to be positive integer", type=int,default=2, metavar="N")
+    
 
     args=parser.parse_args()                           
     ctf=readctfstar()
